@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+# TODO: Reemplaza el job "placeholder" con un job "build" que:
+#   1. Haga checkout del código
+#   2. Configure Docker Buildx con docker/setup-buildx-action@v3
+#   3. Construya la imagen: docker build -t workshop-app .
+#   4. Verifique que el tamaño de la imagen sea ≤ 250 MB:
+#      SIZE_BYTES=$(docker image inspect workshop-app --format='{{.Size}}')
+#      SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
+#      [ "$SIZE_MB" -le 250 ] || exit 1
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder — reemplaza este job con la construcción de la imagen Docker
+        run: echo "Implementa el build de Docker aquí"

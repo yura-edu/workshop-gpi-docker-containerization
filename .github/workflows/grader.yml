@@ -1,0 +1,227 @@
+name: Grader
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Métrica: config_file_exists ────────────────────────────────────────
+      - name: Check required config files exist
+        id: config_exists
+        run: |
+          MISSING=""
+          [ ! -f "Dockerfile" ]        && MISSING="$MISSING Dockerfile"
+          [ ! -f "docker-compose.yml" ] && MISSING="$MISSING docker-compose.yml"
+          [ ! -f ".dockerignore" ]      && MISSING="$MISSING .dockerignore"
+
+          if [ -z "$MISSING" ]; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ All required config files found"
+          else
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ Missing files:$MISSING"
+          fi
+
+      # ── Métrica: config_file_valid_schema ──────────────────────────────────
+      - name: Validate docker-compose.yml schema and services
+        id: config_valid
+        run: |
+          if [ "${{ steps.config_exists.outputs.passed }}" != "true" ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "⏭ Skipped: docker-compose.yml not found"
+            exit 0
+          fi
+
+          set +e
+          docker compose -f docker-compose.yml config > /dev/null 2>&1
+          COMPOSE_VALID=$?
+          set -e
+
+          if [ "$COMPOSE_VALID" -ne 0 ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ docker-compose.yml is not a valid Compose file"
+            exit 0
+          fi
+
+          SERVICES=$(docker compose -f docker-compose.yml config --services 2>/dev/null)
+          MISSING_SVCS=""
+          for SVC in app db redis; do
+            echo "$SERVICES" | grep -q "^${SVC}$" || MISSING_SVCS="$MISSING_SVCS $SVC"
+          done
+
+          if [ -z "$MISSING_SVCS" ]; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ docker-compose.yml is valid with services: app, db, redis"
+          else
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ Missing services:$MISSING_SVCS"
+          fi
+
+      # ── Métrica: docker_image_builds ──────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        id: docker_builds
+        run: |
+          if [ "${{ steps.config_exists.outputs.passed }}" != "true" ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "⏭ Skipped: Dockerfile not found"
+            exit 0
+          fi
+
+          set +e
+          docker build -t workshop-app . 2>&1
+          BUILD_EXIT=$?
+          set -e
+
+          if [ "$BUILD_EXIT" -eq 0 ]; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Docker image built successfully"
+          else
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "❌ docker build failed with exit code $BUILD_EXIT"
+          fi
+
+      # ── Métrica: docker_image_size_mb ──────────────────────────────────────
+      - name: Check Docker image size
+        id: image_size
+        run: |
+          if [ "${{ steps.docker_builds.outputs.passed }}" != "true" ]; then
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "⏭ Skipped: image was not built"
+            exit 0
+          fi
+
+          SIZE_BYTES=$(docker image inspect workshop-app --format='{{.Size}}')
+          SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
+          echo "Image size: ${SIZE_MB} MB"
+
+          if [ "$SIZE_MB" -le 250 ]; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+            echo "✅ Image size ${SIZE_MB} MB is within the 250 MB limit"
+          else
+            SCORE=$(echo "scale=2; 250 / $SIZE_MB" | bc)
+            echo "score=$SCORE" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+            echo "❌ Image size ${SIZE_MB} MB exceeds the 250 MB limit"
+          fi
+
+      # ── Métrica: ci_pipeline_passes ───────────────────────────────────────
+      - name: Check student CI pipeline status
+        id: ci_passes
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          CHECKS=$(gh api \
+            "repos/${{ github.repository }}/commits/${HEAD_SHA}/check-runs" \
+            --jq '[.check_runs[] | select(.name != "grade")] | { total: length, passing: [.[] | select(.conclusion == "success")] | length }' \
+            2>/dev/null || echo '{"total":0,"passing":0}')
+
+          TOTAL=$(echo "$CHECKS" | node -e "console.log(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).total)")
+          PASSING=$(echo "$CHECKS" | node -e "console.log(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).passing)")
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "score=null" >> "$GITHUB_OUTPUT"
+            echo "passed=null" >> "$GITHUB_OUTPUT"
+            echo "unavailable=true" >> "$GITHUB_OUTPUT"
+            echo "⚠️  No CI check runs found yet"
+          elif [ "$TOTAL" -eq "$PASSING" ]; then
+            echo "score=1.0" >> "$GITHUB_OUTPUT"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "unavailable=false" >> "$GITHUB_OUTPUT"
+            echo "✅ All $TOTAL CI checks pass"
+          else
+            echo "score=0.0" >> "$GITHUB_OUTPUT"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "unavailable=false" >> "$GITHUB_OUTPUT"
+            echo "❌ $PASSING/$TOTAL CI checks pass"
+          fi
+
+      # ── Reporte final ──────────────────────────────────────────────────────
+      - name: Build grader report
+        run: |
+          CI_SCORE="${{ steps.ci_passes.outputs.score }}"
+          CI_PASSED="${{ steps.ci_passes.outputs.passed }}"
+          CI_UNAVAILABLE="${{ steps.ci_passes.outputs.unavailable }}"
+
+          [ -z "$CI_SCORE" ]       && CI_SCORE="null"
+          [ -z "$CI_PASSED" ]      && CI_PASSED="null"
+          [ -z "$CI_UNAVAILABLE" ] && CI_UNAVAILABLE="true"
+
+          cat > grader-report.json << EOF
+          {
+            "schemaVersion": "1.0",
+            "templateSlug": "gpi-docker-containerization",
+            "runId": "${{ github.run_id }}",
+            "sha": "${{ github.sha }}",
+            "metrics": [
+              {
+                "metricKey": "config_file_exists",
+                "score": ${{ steps.config_exists.outputs.score }},
+                "passed": ${{ steps.config_exists.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "config_file_valid_schema",
+                "score": ${{ steps.config_valid.outputs.score }},
+                "passed": ${{ steps.config_valid.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "docker_image_builds",
+                "score": ${{ steps.docker_builds.outputs.score }},
+                "passed": ${{ steps.docker_builds.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "docker_image_size_mb",
+                "score": ${{ steps.image_size.outputs.score }},
+                "passed": ${{ steps.image_size.outputs.passed }},
+                "unavailable": false
+              },
+              {
+                "metricKey": "ci_pipeline_passes",
+                "score": $CI_SCORE,
+                "passed": $CI_PASSED,
+                "unavailable": $CI_UNAVAILABLE
+              }
+            ]
+          }
+          EOF
+          cat grader-report.json
+
+      - name: Upload grader report
+        uses: actions/upload-artifact@v4
+        with:
+          name: grader-report
+          path: grader-report.json

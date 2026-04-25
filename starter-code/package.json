@@ -1,0 +1,12 @@
+{
+  "name": "workshop-gpi-docker-containerization",
+  "version": "1.0.0",
+  "description": "API starter for the Docker Containerization workshop",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
