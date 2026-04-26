@@ -1,0 +1,59 @@
+# yura.workshop.yaml — declarative grader config
+# Spec: docs/grader-workers-spec.md §6
+# Generated from prisma/seeds/workshop-templates.seed.ts
+
+schema_version: "1.0"
+workshop:
+  id: gpi-docker-containerization
+  title: "Containerización con Docker"
+  type: configuration
+  language: polyglot
+  passing_threshold: 70
+  base_branch: main
+submission:
+  source: workshop_link
+  required_inputs:
+    - type: github_repo_url
+      label: "URL del repositorio"
+      required: true
+    - type: github_pr_url
+      label: "URL del Pull Request"
+      required: true
+evaluation_profile:
+  - metric_id: config_file_exists
+    weight: 15
+    threshold: 1
+    config:
+      paths:
+        - ".github/workflows/*.yml"
+        - ".github/workflows/*.yaml"
+      match_mode: any
+  - metric_id: config_file_valid_schema
+    weight: 20
+    threshold: 1
+    config:
+      target_file: .github/workflows/ci.yml
+      schema_source: bundled
+      schema_id: github-actions-workflow-1.0
+      format: yaml
+  - metric_id: docker_image_builds
+    weight: 30
+    threshold: 1
+    config:
+      dockerfile: Dockerfile
+      context: .
+      timeout_seconds: 600
+  - metric_id: docker_image_size_mb
+    weight: 20
+    threshold: 250
+    config:
+      image_tag: "workshop:eval"
+      max_size_mb: 250
+  - metric_id: ci_pipeline_passes
+    weight: 15
+    threshold: 1
+    config:
+      provider: github_actions
+      required_workflows: []
+      mode: all_required_pass
+      timeout_minutes_after_submit: 10
